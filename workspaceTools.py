@@ -2,6 +2,7 @@
 import ROOT
 from array import array
 import math
+import numpy as np
 
 # Boilerplate
 ROOT.PyConfig.IgnoreCommandLineOptions = True
@@ -22,6 +23,28 @@ def TGraphAsymmErrorsToTH1D(graph):
         hist.SetBinError(i, (graph.GetEYhigh()[i-1] + graph.GetEYlow()[i-1]) / 2.)
     return hist
 
+def UncertsFromGraphs(graph_data,graph_mc):
+    nbins = graph_data.GetN()
+    bin_edges = []
+    for i in xrange(0, nbins):
+        bin_edges.append(graph_data.GetX()[i]-graph_data.GetEXlow()[i])
+    bin_edges.append(graph_data.GetX()[i]+graph_data.GetEXhigh()[nbins-1])
+    hist_up = ROOT.TH1D(graph_data.GetName()+'_up', graph_data.GetTitle(), nbins, array('d', bin_edges))
+    hist_down = ROOT.TH1D(graph_data.GetName()+'_down', graph_data.GetTitle(), nbins, array('d', bin_edges))
+    for i in xrange(1, nbins+1):
+        content_data=graph_data.GetY()[i-1]
+        content_data_up=graph_data.GetEYhigh()[i-1]
+        content_data_down=graph_data.GetEYlow()[i-1]
+
+        content_mc=graph_mc.GetY()[i-1] 
+        content_mc_up=graph_mc.GetEYhigh()[i-1]
+        content_mc_down=graph_mc.GetEYlow()[i-1]
+        # assume data and MC uncertainties are uncorrelated, data up-shift shifts SF up whereas data down-shift shifts SF up and vise versa
+        up = (1.+math.sqrt((content_data_up/content_data)**2 + (content_mc_down/content_mc)**2))
+        down = (1.-math.sqrt((content_data_down/content_data)**2 + (content_mc_up/content_mc)**2))
+        hist_up.SetBinContent(i,up)
+        hist_down.SetBinContent(i,down)
+    return (hist_up,hist_down)
 
 # Special version of the above function that infers the binning without using EXlow/high
 # Instead relies on the assumption that first bin starts at zero
@@ -50,9 +73,37 @@ def TGraphAsymmErrorsToTH1DForTaus(graph):
     # hist.Print('range')
     return hist
 
-def SafeWrapHist(wsp, binvars, hist, name=None, bound=True):
+def Convert2DOverflows(h):
+
+   nx = h.GetNbinsX()+1
+   xbins=[]
+   for i in range(1,nx+1):
+     xbins.append(h.GetXaxis().GetBinLowEdge(i))
+   xbins.append(xbins[nx-1]+h.GetXaxis().GetBinWidth(nx))
+
+   ny = h.GetNbinsY()+1
+   ybins=[]
+   for i in range(1,ny+1):
+     ybins.append(h.GetYaxis().GetBinLowEdge(i))
+   ybins.append(ybins[ny-1]+h.GetYaxis().GetBinWidth(ny))
+
+   name=h.GetName()
+   htmp = ROOT.TH2F(name, h.GetTitle(), nx, np.asarray(xbins), ny, np.asarray(ybins))
+   htmp.SetXTitle(h.GetXaxis().GetTitle())
+   htmp.SetYTitle(h.GetYaxis().GetTitle())
+   for i in range(1,nx+1): 
+     for j in range(1,ny+1):
+       htmp.Fill(htmp.GetXaxis().GetBinCenter(i),htmp.GetYaxis().GetBinCenter(j), h.GetBinContent(i,j))
+   htmp.SetEntries(h.GetEntries())
+   return htmp
+
+
+def SafeWrapHist(wsp, binvars, hist, name=None, bound=True, incOF=False):
     # Use the histogram name for this function unless a new name has
     # been specified
+
+    if len(binvars) == 2 and incOF: hist=Convert2DOverflows(hist)
+
     if name is None:
         name = hist.GetName()
     # Bit of technical RooFit thing:
@@ -69,6 +120,7 @@ def SafeWrapHist(wsp, binvars, hist, name=None, bound=True):
     f_arglist = ROOT.RooArgList()
     # Keep track of the relevant histogram axes (for the 1D, 2D or 3D cases)
     axes = [hist.GetXaxis()]
+
     if len(binvars) >= 2:
         axes.append(hist.GetYaxis())
     if len(binvars) >= 3:
